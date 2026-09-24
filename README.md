@@ -1,0 +1,97 @@
+=======================================================================
+DOCUMENTO CONOPS (CONCEPT OF OPERATIONS) - MISSIONE CANSAT
+Data: Luglio 2026
+Autore: Pietro Clarizio
+=======================================================================
+
+
+1. OBIETTIVO DELLA MISSIONE
+-----------------------------------------------------------------------
+Progettare, lanciare e recuperare una sonda atmosferica (CanSat) rilasciata 
+dalla sommità di un edificio. 
+
+La sonda deve registrare dati ambientali 
+(pressione, temperatura, umidità), calcolare la traiettoria altimetrica 
+tramite formula ipsometrica, salvare i dati a bordo come scatola nera 
+e trasmetterli in tempo reale a una stazione di terra.
+
+Il sistema di frenata (paracadute) sarà pre-dispiegato per massimizzare 
+l'affidabilità meccanica.
+
+
+2. ARCHITETTURA HARDWARE
+-----------------------------------------------------------------------
+- Microcontrollore: Raspberry Pi Pico W (Gestione Dual-Core).
+- Sensore Atmosferico: BME280 (Bus I2C) per Temp, Press, Umidità.
+- Sensore Inerziale: MPU6050 (Bus I2C) per rilevamento accelerazione/impatti.
+- Scatola Nera: Modulo MicroSD (Bus SPI) per log dati in formato CSV.
+- Sistema di Recupero: Buzzer Attivo ad alto volume + LED ad alta luminosità.
+- Sistema di Alimentazione: 
+  * Batteria LiPo 1S (3.7V, ~350-500mAh) per massima leggerezza.
+  * Modulo Step-Up (Boost Converter) per innalzamento tensione a 5V (verso pin VSYS).
+  * Regolatore interno Pico W per alimentazione logica e sensori a 3.3V.
+- Modulo di Ricarica (A terra): TP4056 USB-C.
+
+
+3. ARCHITETTURA SOFTWARE (DUAL-CORE PARALLELO)
+-----------------------------------------------------------------------
+CORE 0 [Critical Flight System]
+- Frequenza: Alta (20-50 Hz, implementata tramite time.ticks_ms).
+- Mansioni: 
+  1. Lettura sensori I2C con gestione errori (try/except).
+  2. Applicazione formula ipsometrica per calcolo quota.
+  3. Scrittura stringa dati su MicroSD.
+  4. Controllo logica di atterraggio.
+  5. Aggiornamento variabili condivise protette da Mutex.
+
+CORE 1 [Telemetry System]
+- Frequenza: Bassa (1-2 Hz).
+- Mansioni:
+  1. Accesso alle variabili condivise tramite Mutex.
+  2. Trasmissione pacchetto UDP/Socket via Wi-Fi al computer di terra.
+
+
+4. PROFILO DI VOLO (FASI DELLA MISSIONE)
+-----------------------------------------------------------------------
+FASE 1: PRE-LANCIO (STANDBY & CALIBRAZIONE)
+- Accensione del sistema (connessione batteria).
+- Inizializzazione bus I2C e SPI.
+- Mount della MicroSD e creazione file log (es. "volo_01.csv").
+- Connessione rete Wi-Fi (stazione di terra).
+- Calibrazione BME280: Lettura della pressione atmosferica di riferimento 
+  (P0) alla quota di lancio per tarare la formula ipsometrica.
+
+FASE 2: RILASCIO (LAUNCH)
+- Il CanSat viene sganciato dall'edificio. 
+- Il paracadute, fissato esternamente tramite gancio, fa subito presa sull'aria 
+  stabilizzando l'assetto e limitando la velocità terminale.
+- L'MPU6050 registra il picco di accelerazione iniziale e il cambio di assetto.
+
+FASE 3: DISCESA (DATA GATHERING)
+- Il Core 0 campiona i parametri atmosferici e aggiorna il calcolo della quota.
+- I dati vengono incisi sulla SD (Scatola Nera) a ritmo serrato.
+- Il Core 1 invia un subset di questi dati alla stazione di terra per 
+  monitoraggio in tempo reale.
+
+FASE 4: ATTERRAGGIO (TOUCHDOWN & RECOVERY)
+- La logica del Core 0 rileva l'atterraggio analizzando due parametri incrociati:
+  1. Altitudine stabile (nessuna variazione significativa negli ultimi 3 secondi).
+  2. Accelerazione statica (1g continuo su asse Z registrato da MPU6050, no freefall).
+- Innesco Recupero: Il Core 0 interrompe la registrazione per salvare il file e 
+  attiva in loop infinito il Buzzer acustico e il LED di segnalazione visiva.
+
+FASE 5: POST-VOLO (DATA ANALYSIS)
+- Spegnimento manuale (rimozione alimentazione).
+- Estrazione MicroSD.
+- Importazione del file CSV su software di plotting (es. Python/Matplotlib o Excel).
+- Ricostruzione grafica della traiettoria di caduta e dei profili termodinamici.
+
+
+5. GESTIONE DELLE EMERGENZE E FAILSAFE
+-----------------------------------------------------------------------
+- Perdita segnale Wi-Fi: Il Core 1 va in timeout, ma il Core 0 continua a volare 
+  e a scrivere su SD (Single Point of Failure mitigato).
+  
+- Disconnessione temporanea sensori: I blocchi "try/except" sul bus I2C evitano 
+  il crash del firmware. Verrà registrato un dato nullo ("NaN") sulla SD per quel 
+  ciclo, e il sistema riproverà al ciclo successivo.
